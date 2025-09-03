@@ -77,11 +77,9 @@ It combines **mathematical modeling**, **probability-based events**, and a **rea
 ```
 virus-simulation/
 │
-├── model.py         # Core logic (population, disease, food, satisfaction)
-├── habitant.py      # Inhabitant class definition
-├── main.py          # Pygame visualization and main simulation loop
-├── README.md        # Project documentation
-└── requirements.txt # Dependencies
+├── habitant.py      # Inhabitant class definition and Core logic (population, disease, food, satisfaction)
+├── final_test.py    # Pygame visualization and main simulation loop
+└── README.md        # Project documentation
 ```
 
 ---
