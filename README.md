@@ -7,7 +7,7 @@ It combines **mathematical modeling**, **probability-based events**, and a **rea
 
 ## 🎥 Demo Video 
 
-[![Watch the video]([[https://img.youtube.com/vi/VIDEO_ID/0.jpg)](https://www.youtube.com/watch?v=VIDEO_ID](https://www.youtube.com/watch?v=VbC-yXxxjL8)](https://youtu.be/VbC-yXxxjL8))
+![Simulation Demo](demo/demo.gif)
 
 ---
 
