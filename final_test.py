@@ -1,5 +1,5 @@
 import pygame
-from habitant_final import Habitant, form_couples, simulate_day
+from habitant import Habitant, form_couples, simulate_day
 
 # --- Pygame init ---
 pygame.init()
@@ -218,3 +218,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
