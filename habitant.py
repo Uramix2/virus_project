@@ -1,28 +1,61 @@
 from random import choices, random, shuffle
+from math import sqrt
 
-# --- Paramètres ---
-action_job = {"farmer": 35, "doctor": 3, "worker": 3, "jobless": 2}
-action_personalities_for_sickness = {"strong": 6, "weak": 2, "rich": 5, "poor": 3, "normal": 4}
-action_personalities_for_food = {"strong": 3, "weak": 3, "rich": 5, "poor": 1, "normal": 3}
+# --- Simulation settings ---
+JOB_ACTION = {"farmer": 35, "doctor": 3,"worker": 3, "jobless": 2}  # farmer produces 35 food units/day, doctor can treat 3 ppl/day
+HEALTH_TTL_BY_PERSONA = {"strong": 7, "weak": 3, "rich": 8, "poor": 4, "normal": 5}  # days before death if infected
+DAILY_NEED_BY_PERSONA_AND_JOB = {
+    "strong": 3, "weak": 3, "rich": 5, "poor": 1, "normal": 3,
+    "worker": 3, "jobless": 2
+}
 
-# --- Classe Habitant ---
+# --- hanitant class ---
 class Habitant:
-    def __init__(self, age=25):
-        self.etat = choices(["infect", "healthy"], weights=[80, 20])[0]
-        self.perso = choices(["strong", "weak", "rich", "poor", "normal"], weights=[5, 5, 5, 10, 75])[0]
-        self.job = choices(["farmer", "doctor", "worker", "jobless"], weights=[17, 5, 45, 8])[0] if age >= 15 else "none"
+    def __init__(self, age: int = 25):
+        """
+        Initialize a habitant with:
+        - infection state, persona, job, age
+        - hospital-related fields
+        - food shortage tracking
+        - partner
+        - spawn position (screen-space)
+        """
+        self.state = choices(["infect", "healthy"], weights=[1, 99])[0]
+        self.persona = choices(["strong", "weak", "rich", "poor", "normal"],
+                               weights=[5, 5, 5, 10, 75])[0]
+        self.job = choices(["farmer", "doctor", "worker", "jobless"],
+                           weights=[17, 5, 45, 8])[0] if age >= 15 else "none"
         self.age = age
-        self.day_infect = 0
-        self.at_the_doctor = False
+
+        # Disease / hospital
+        self.days_infected = 0
+        self.at_hospital = False
         self.hospital_days = 0
+
+        # Food tracking
         self.food_deficit = 0
-        self.days_of_hunger = 0
+        self.days_hungry = 0
+
+        # Social
         self.partner = None
 
-# --- Former des couples ---
+        # Position (adapt as needed to avoid your legend zone)
+        self.x = int(random() * 1720)
+        self.y = int(random() * 860)
+
+
+# --- Couple formation ---
 def form_couples(population, existing_couples):
-    eligible = [h for h in population if h.partner is None and h.age >= 18]
+    """
+    Pair up residents who are >=18 and currently single.
+    Returns old valid couples + newly formed ones.
+
+    Argments: population, existing_couples
+    Returns: valid_old + new_couples
+    """
+    eligible = [r for r in population if r.partner is None and r.age >= 18]
     shuffle(eligible)
+
     new_couples = []
     i = 0
     while i < len(eligible) - 1:
@@ -30,296 +63,348 @@ def form_couples(population, existing_couples):
         eligible[i + 1].partner = eligible[i]
         new_couples.append((eligible[i], eligible[i + 1]))
         i += 2
-    valid_couples = [(p1, p2) for p1, p2 in existing_couples if p1 in population and p2 in population]
-    return valid_couples + new_couples
 
-# --- Gérer les naissances ---
-def handle_births(population, satisfaction, jour, couples, nourriture, consommation):
+    valid_old = [(a, b) for a, b in existing_couples if a in population and b in population]
+    return valid_old + new_couples
+
+
+# --- Births ---
+def handle_births(population, satisfaction, day, couples, food, consumption):
+    """
+    Decide births when satisfaction is decent. Probability depends on food balance.
+    Returns (population, births_log).
+
+    Argments: population, satisfaction, day, couples, food, consumption
+    Returns: population, births
+    """
     births = []
-    eligible_couples = [(p1, p2) for p1, p2 in couples]
     if satisfaction > 30:
-        proba_birth = 0.05 if nourriture < consommation else 0.2
+        p_birth = 0.05 if food < consumption else 0.2
         if len(population) > 1000:
-            proba_birth /= 10
-        for parent1, parent2 in eligible_couples:
-            if random() < proba_birth:
+            p_birth /= 10
+
+        for p1, p2 in couples:
+            if random() < p_birth:
                 child = Habitant(age=0)
                 population.append(child)
-                births.append((jour, child.perso, child.job))
+                births.append((day, child.persona, child.job))
     return population, births
 
-# --- Morts naturelles ---
-def check_natural_death(population, jour, deaths_today):
-    for h in population[:]:
-        if 10 <= h.age <= 100:
-            proba = 0.0005 if h.age < 60 else (0.0005 + (h.age - 60) / 40 * 0.0095)
-            if random() < proba:
-                deaths_today.append((jour, h.job, h.perso, h.day_infect, h.at_the_doctor, h.hospital_days, "naturel"))
-                if h.partner:
-                    h.partner.partner = None
-                population.remove(h)
+
+# --- Unified deaths (natural + starvation) ---
+def check_deaths(population, day, deaths_today):
+    """
+    Remove residents who die either from:
+      - natural death (age-based probability)
+      - starvation (too many hungry days + deficit)
+    Appends a record to deaths_today and unlinks partners.
+
+    Argments: population, day, deaths_today
+    Returns: population, deaths_today
+    """
+    for r in population[:]:
+        cause = None
+
+        # Natural death (independent of starvation)
+        if 10 <= r.age <= 100:
+            p = 0.0005 if r.age < 60 else (0.0005 + (r.age - 60) / 40 * 0.0095)
+            if random() < p:
+                cause = "natural"
+
+        # Starvation death
+        if r.days_hungry >= 7 and r.food_deficit > 10:
+            cause = "starvation"
+
+        if cause:
+            deaths_today.append(
+                (day, r.job, r.persona, getattr(r, "days_infected", 0),
+                 getattr(r, "at_hospital", False), getattr(r, "hospital_days", 0),
+                 cause)
+            )
+            if r.partner:
+                r.partner.partner = None
+            population.remove(r)
+
     return population, deaths_today
 
-# --- Mise à jour nourriture ---
-def update_food(population, nourriture):
-    production = sum(action_job["farmer"] for h in population if h.job == "farmer")
-    consommation = sum(action_personalities_for_food[h.perso] + (action_job[h.job] if h.job in ["worker", "jobless"] else 0) for h in population)
-    nourriture += production
-    return nourriture, consommation
 
-# --- Distribution nourriture ---
-def distribute_food(population, nourriture):
-    for h in population:
-        h.daily_need = action_personalities_for_food[h.perso] + (action_job[h.job] if h.job in ["worker", "jobless"] else 0)
+# --- Food production & consumption ---
+def update_food(population, food):
+    """
+    Update food for population
+
+    Arguments: population, food
+    Returns: new_food_stock, total_consumption_for_the_day).
+    """
+    production = sum(JOB_ACTION["farmer"] for r in population if r.job == "farmer")
+    consumption = sum(
+        DAILY_NEED_BY_PERSONA_AND_JOB[r.persona] +
+        (JOB_ACTION[r.job] if r.job in ["worker", "jobless"] else 0)
+        for r in population
+    )
+    food += production
+    return food, consumption
+
+
+# --- Food distribution (priority-based) ---
+def distribute_food(population, food):
+    """
+    Distribute food by priority groups.
+
+    Argments: population, food
+    Returns: food, underfed
+    """
+    for r in population:
+        r.daily_need = DAILY_NEED_BY_PERSONA_AND_JOB[r.persona] + \
+                       (JOB_ACTION[r.job] if r.job in ["worker", "jobless"] else 0)
+
     priority_groups = [
-        [h for h in population if h.perso == "rich"],
-        [h for h in population if h.job in ["doctor", "farmer", "worker"]],
-        [h for h in population if h.job == "jobless"],
-        [h for h in population if h.perso == "poor"]
+        [r for r in population if r.persona == "rich"],
+        [r for r in population if r.job in ["doctor", "farmer", "worker"]],
+        [r for r in population if r.job == "jobless"],
+        [r for r in population if r.persona == "poor"]
     ]
-    mal_nourris = 0
+
+    underfed = 0
     for group in priority_groups:
-        for h in group:
-            if nourriture >= h.daily_need:
-                nourriture -= h.daily_need
-                h.days_of_hunger = 0
-                h.food_deficit = 0
+        for r in group:
+            if food >= r.daily_need:
+                food -= r.daily_need
+                r.days_hungry = 0
+                r.food_deficit = 0
             else:
-                deficit = h.daily_need - nourriture
-                nourriture = 0
-                h.food_deficit += deficit
-                h.days_of_hunger += 1
-                mal_nourris += 1
-    return nourriture, mal_nourris
+                deficit = r.daily_need - food
+                food = 0
+                r.food_deficit += deficit
+                r.days_hungry += 1
+                underfed += 1
+    return food, underfed
 
-# --- Mort de faim ---
-def check_starvation(population, jour, deaths_today):
-    for h in population[:]:
-        if h.days_of_hunger >= 7 and h.food_deficit > 10:
-            deaths_today.append((jour, h.job, h.perso, 0, False, 0, "faim"))
-            if h.partner:
-                h.partner.partner = None
-            population.remove(h)
-    return population, deaths_today
 
-# --- Mise à jour statuts sociaux ---
-def update_status_changes(population, satisfaction, satisfaction_previous):
-    status_changes = []
-    for h in population:
-        if h.job == "worker" and random() < 0.01:
-            h.job = "jobless"
-            status_changes.append(f"Worker -> Jobless : Perso: {h.perso}")
-        if h.job == "jobless" and h.age >= 15 and random() < 0.05:
+# --- Social status changes ---
+def update_status_changes(population, satisfaction, satisfaction_prev):
+    """
+    Random transitions between jobs/personas based on satisfaction trends.
+
+    Argments: population, satisfaction, satisfaction_prev
+    Returns: population, changes
+
+    """
+    changes = []
+    for r in population:
+        if r.job == "worker" and random() < 0.01:
+            r.job = "jobless"
+            changes.append(f"Worker -> Jobless : Persona: {r.persona}")
+
+        if r.job == "jobless" and r.age >= 15 and random() < 0.05:
             new_job = choices(["doctor", "farmer", "worker"], weights=[1, 30, 69])[0]
-            h.job = new_job
-            status_changes.append(f"Jobless -> {new_job} : Perso: {h.perso}")
-        if h.job == "none" and h.age >= 15:
-            h.job = choices(["farmer", "doctor", "worker", "jobless"], weights=[17, 5, 45, 8])[0]
-            status_changes.append(f"None -> {h.job} : Perso: {h.perso}")
-        if h.perso == "poor" and random() < 0.05:
-            h.perso = "normal"
-            status_changes.append(f"Poor -> Normal : Métier: {h.job}")
-        if h.perso == "rich":
-            proba = (100 - satisfaction) / 100 * 0.1 + (0.05 if satisfaction < satisfaction_previous else 0)
-            if random() < proba:
-                h.perso = "normal"
-                status_changes.append(f"Rich -> Normal : Métier: {h.job}")
-        if h.perso == "normal":
-            proba = satisfaction / 100 * 0.05 + (0.05 if satisfaction > satisfaction_previous else 0)
-            if random() < proba:
-                h.perso = "rich"
-                status_changes.append(f"Normal -> Rich : Métier: {h.job}")
-    return population, status_changes
+            r.job = new_job
+            changes.append(f"Jobless -> {new_job} : Persona: {r.persona}")
 
-# --- Mise à jour maladies ---
-def update_disease(population, jour, deaths_today):
-    for h in population[:]:
-        if h.etat == "infect":
-            h.day_infect += 1
-            if h.at_the_doctor:
-                h.hospital_days += 1
-            if h.day_infect > action_personalities_for_sickness[h.perso]:
-                deaths_today.append((jour, h.job, h.perso, h.day_infect, h.at_the_doctor, h.hospital_days, "infection"))
-                if h.partner:
-                    h.partner.partner = None
-                population.remove(h)
+        if r.job == "none" and r.age >= 15:
+            r.job = choices(["farmer", "doctor", "worker", "jobless"], weights=[17, 5, 45, 8])[0]
+            changes.append(f"None -> {r.job} : Persona: {r.persona}")
+
+        if r.persona == "poor" and random() < 0.05:
+            r.persona = "normal"
+            changes.append(f"Poor -> Normal : Job: {r.job}")
+
+        if r.persona == "rich":
+            p = (100 - satisfaction) / 100 * 0.1 + (0.05 if satisfaction < satisfaction_prev else 0)
+            if random() < p:
+                r.persona = "normal"
+                changes.append(f"Rich -> Normal : Job: {r.job}")
+
+        if r.persona == "normal":
+            p = satisfaction / 100 * 0.05 + (0.05 if satisfaction > satisfaction_prev else 0)
+            if random() < p:
+                r.persona = "rich"
+                changes.append(f"Normal -> Rich : Job: {r.job}")
+
+    return population, changes
+
+
+# --- Disease update (death by infection threshold) ---
+def update_disease(population, day, deaths_today):
+    """
+    Infected residents progress one day; if they exceed their TTL, they die.
+
+    Argments: population, day, deaths_today 
+    Returns: population, []
+    """
+    for r in population[:]:
+        if r.state == "infect":
+            r.days_infected += 1
+            if r.at_hospital:
+                r.hospital_days += 1
+            if r.days_infected > HEALTH_TTL_BY_PERSONA[r.persona]:
+                deaths_today.append(
+                    (day, r.job, r.persona, r.days_infected, r.at_hospital, r.hospital_days, "infection")
+                )
+                if r.partner:
+                    r.partner.partner = None
+                population.remove(r)
     return population, []
 
-# --- Mise à jour docteurs ---
-def update_doctor(population, jour, visits_today):
-    nb_doctor = sum(1 for h in population if h.job == "doctor")
+
+# --- Doctors visits & cures ---
+def update_doctor(population, day, visits_today):
+    """
+    Doctors attend a number of visits per day; some infected are cured.
+
+    Argments: population, day, visits_today
+    Returns: population, visits_today, nb_doctors
+    """
+    nb_doctors = sum(1 for r in population if r.job == "doctor")
     visits_today = []
-    if nb_doctor > 0 and jour > 2:
-        nb_visits = nb_doctor * action_job["doctor"]
-        for h in [h for h in population if h.etat == "infect" and h.at_the_doctor]:
-            if nb_visits <= 0:
+
+    if nb_doctors > 0 and day > 2:
+        capacity = nb_doctors * JOB_ACTION["doctor"]
+
+        # Treat already hospitalized first
+        for r in [x for x in population if x.state == "infect" and x.at_hospital]:
+            if capacity <= 0:
                 break
-            proba_success = max(0, 0.80 - (h.day_infect - 1) * 0.10)
-            if random() < proba_success:
-                h.etat = "healthy"
-                h.day_infect = 0
-                h.at_the_doctor = False
-                h.hospital_days = 0
-            nb_visits -= 1
-        if nb_visits > 0:
-            for h in [h for h in population if h.etat == "infect" and not h.at_the_doctor]:
-                prob_to_see_doctor = min(1, 0.30 + (h.day_infect - 1) * 0.10)
-                if random() < prob_to_see_doctor:
-                    h.at_the_doctor = True
-                    h.hospital_days = 1
-                    visits_today.append((h.job, h.perso, h.day_infect))
-                    nb_visits -= 1
-    return population, visits_today, nb_doctor
+            success = max(0, 0.80 - (r.days_infected - 1) * 0.10)
+            if random() < success:
+                r.state = "healthy"
+                r.days_infected = 0
+                r.at_hospital = False
+                r.hospital_days = 0
+            capacity -= 1
 
-# --- Calcul satisfaction ---
-def calculate_satisfaction(satisfaction, consommation, nourriture, deaths_today, nb_hospitalises, nb_doctor, population, mal_nourris):
-    deficit = max(0, consommation - nourriture)
-    deficit_ratio = deficit / consommation if consommation > 0 else 0
-    surplus = max(0, nourriture - consommation)
-    surplus_ratio = surplus / consommation if consommation > 0 else 0
-    mortalite_ratio = len(deaths_today) / len(population) if population else 0
-    capacite_docteurs = nb_doctor * action_job["doctor"]
-    hospitalisation_ratio = nb_hospitalises / capacite_docteurs if capacite_docteurs > 0 else 0
-    nourriture_impact = (5 + 2 * surplus_ratio) if deficit_ratio == 0 else -5 * deficit_ratio * (1.2 if deficit_ratio > 0.3 else 1)
-    mortalite_impact = -25 * mortalite_ratio
-    hospitalisation_impact = -15 * hospitalisation_ratio
-    mal_nourris_impact = -0.5 * mal_nourris
-    amortissement = 1 if satisfaction < 50 else (-2 if satisfaction > 90 else 0)
-    seuil_critique = 1.2 if satisfaction < 30 else 1.0
-    delta_s = (nourriture_impact + mortalite_impact + hospitalisation_impact + mal_nourris_impact + amortissement) * seuil_critique
-    return max(0, min(100, satisfaction + delta_s))
+        # Then send new infected to hospital
+        if capacity > 0:
+            for r in [x for x in population if x.state == "infect" and not x.at_hospital]:
+                prob_to_visit = min(1, 0.30 + (r.days_infected - 1) * 0.10)
+                if random() < prob_to_visit:
+                    r.at_hospital = True
+                    r.hospital_days = 1
+                    visits_today.append((r.job, r.persona, r.days_infected))
+                    capacity -= 1
+                if capacity <= 0:
+                    break
 
-# --- Simulation d'un jour ---
-def simulate_day(population, nourriture, satisfaction, jour, satisfaction_previous, couples):
+    return population, visits_today, nb_doctors
+
+
+# --- Satisfaction scoring ---
+def calculate_satisfaction(satisfaction, consumption, food, deaths_today,
+                           nb_hospitalized, nb_doctors, population, underfed_count):
+    """
+    Aggregate score influenced by food balance, mortality, hospital load, hunger.
+    
+    Argments: satisfaction, consumption, food, deaths_today,
+    nb_hospitalized, nb_doctors, population, underfed_count
+
+    Returns: new satisfaction in [0, 100]
+
+    """
+    deficit = max(0, consumption - food)
+    deficit_ratio = deficit / consumption if consumption > 0 else 0
+    surplus = max(0, food - consumption)
+    surplus_ratio = surplus / consumption if consumption > 0 else 0
+
+    mortality_ratio = len(deaths_today) / len(population) if population else 0
+    capacity_doctors = nb_doctors * JOB_ACTION["doctor"]
+    hospital_ratio = nb_hospitalized / capacity_doctors if capacity_doctors > 0 else 0
+
+    food_impact = (5 + 2 * surplus_ratio) if deficit_ratio == 0 else -5 * deficit_ratio * (1.2 if deficit_ratio > 0.3 else 1)
+    mortality_impact = -25 * mortality_ratio
+    hospital_impact = -15 * hospital_ratio
+    underfed_impact = -0.5 * underfed_count
+
+    damping = 1 if satisfaction < 50 else (-2 if satisfaction > 90 else 0)
+    critical = 1.2 if satisfaction < 30 else 1.0
+
+    delta = (food_impact + mortality_impact + hospital_impact + underfed_impact + damping) * critical
+    return max(0, min(100, satisfaction + delta))
+
+
+# --- One-day simulation ---
+def simulate_day(population, food, satisfaction, day, satisfaction_prev, couples):
+    """
+    Runs one full day of the simulation
+    
+    Argments: population, food, satisfaction, day, satisfaction_prev, couples
+
+    Returns: population, food, satisfaction, deaths_today, visits_today, 
+    status_changes, births, couples
+    """
     deaths_today = []
     visits_today = []
     status_changes = []
     births = []
 
-    for h in population:
-        h.age += 1
+    # Age everyone by 1 day (or 1 unit)
+    for r in population:
+        r.age += 1
 
     couples = form_couples(population, couples)
-    population, deaths_today = check_natural_death(population, jour, deaths_today)
-    nourriture, consommation = update_food(population, nourriture)
-    population, births = handle_births(population, satisfaction, jour, couples, nourriture, consommation)
-    population, status_changes = update_status_changes(population, satisfaction, satisfaction_previous)
-    nourriture, mal_nourris = distribute_food(population, nourriture)
-    population, deaths_starvation = check_starvation(population, jour, deaths_today)
-    deaths_today.extend(deaths_starvation)
-    population, deaths_disease = update_disease(population, jour, deaths_today)
+    population, deaths_today = check_deaths(population, day, deaths_today)
+
+    food, consumption = update_food(population, food)
+    population, births = handle_births(population, satisfaction, day, couples, food, consumption)
+
+    population, status_changes = update_status_changes(population, satisfaction, satisfaction_prev)
+
+    food, underfed = distribute_food(population, food)
+
+    # Local virus transmission based on distance
+    transmissions = 0
+    to_infect = []
+    for a in population:
+        if a.state == "infect":
+            for b in population:
+                if b.state == "healthy" and b not in to_infect:
+                    dist = sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2)
+                    if dist < 45 and random() < 0.45:
+                        to_infect.append(b)
+                        transmissions += 1
+    for r in to_infect:
+        r.state = "infect"
+        r.days_infected = 1
+    print(f"Day {day} : {transmissions} transmissions")
+
+    population, deaths_disease = update_disease(population, day, deaths_today)
     deaths_today.extend(deaths_disease)
-    population, visits_today, nb_doctor = update_doctor(population, jour, visits_today)
-    nb_hospitalises = sum(1 for h in population if h.at_the_doctor)
-    satisfaction = calculate_satisfaction(satisfaction, consommation, nourriture, deaths_today, nb_hospitalises, nb_doctor, population, mal_nourris)
 
-    return population, nourriture, satisfaction, deaths_today, visits_today, status_changes, births, couples
+    population, visits_today, nb_doctors = update_doctor(population, day, visits_today)
+    nb_hospitalized = sum(1 for r in population if r.at_hospital)
 
-
-# --- Test simulation ---
-pop = [Habitant(age=25) for _ in range(150)]
-nourriture = 2000
-satisfaction = 80
-jours = 100
-
-couples = form_couples(pop, [])
-print("\n╔════════════════════════════════════════════════════╗")
-print(" 🎬   SIMULATION LANCÉE")
-print(f" 👥 Couples initiaux : {len(couples)}")
-print("╚════════════════════════════════════════════════════╝\n")
-
-deaths_log = []
-visits_log = []
-status_changes_log = []
-births_log = []
-satisfaction_previous = satisfaction
-
-for jour in range(1, jours + 1):
-    pop, nourriture, satisfaction, deaths_today, visits_today, status_changes, births, couples = simulate_day(
-        pop, nourriture, satisfaction, jour, satisfaction_previous, couples
+    satisfaction = calculate_satisfaction(
+        satisfaction, consumption, food, deaths_today,
+        nb_hospitalized, nb_doctors, population, underfed
     )
-    deaths_log.extend(deaths_today)
-    visits_log.extend(visits_today)
-    status_changes_log.extend(status_changes)
-    births_log.extend(births)
-    satisfaction_previous = satisfaction
 
-    if jour % 5 == 0:
-        jobs = {"farmer": 0, "doctor": 0, "worker": 0, "jobless": 0, "none": 0}
-        etats = {"infect": 0, "healthy": 0}
-        persos = {"strong": 0, "weak": 0, "rich": 0, "poor": 0, "normal": 0}
-        chez_le_docteur = 0
-        for h in pop:
-            jobs[h.job] += 1
-            etats[h.etat] += 1
-            persos[h.perso] += 1
-            if h.at_the_doctor:
-                chez_le_docteur += 1
-
-        print("════════════════════════════════════════════════════")
-        print(f" 📊 JOUR {jour} - BILAN")
-        print("────────────────────────────────────────────────────")
-        print(f" 👥 Population : {len(pop)}   |   💞 Couples : {len(couples)}")
-        print(f" 🍖 Nourriture : {nourriture:.0f}   |   😊 Satisfaction : {satisfaction:.0f}")
-        print("────────────────────────────────────────────────────")
-        print(f" 🩺 Santé : {etats}   |   👨‍⚕️ Patients : {chez_le_docteur}")
-        print(f" 🏭 Métiers : {jobs}")
-        print(f" 💡 Personnalités : {persos}")
-        print("────────────────────────────────────────────────────")
-        if deaths_today:
-            print(f" ⚰️ Décès aujourd'hui : {len(deaths_today)}")
-        if visits_today:
-            print(f" 🩺 Visites médecin : {len(visits_today)}")
-        if status_changes:
-            print(f" 🔄 Changements : {len(status_changes)}")
-        if births:
-            print(f" 👶 Naissances : {len(births)}")
-        else:
-            print(" 😔 Aucune naissance")
-        print("════════════════════════════════════════════════════\n")
-
-    else:
-        nb_infectes = sum(1 for h in pop if h.etat == "infect")
-        print(f" Jour {jour:3} → 👥 {len(pop)} | 🦠 Infectés : {nb_infectes} | ⚰️ Morts : {len(deaths_today)}")
+    return population, food, satisfaction, deaths_today, visits_today, status_changes, births, couples
 
 
-        
-# --- Rapport Final ---
-print(f"\n🏁 FIN DE SIMULATION")
-print(f"--- Bilan Final ---")
 
-# Total décès
-print(f"⚰️ Décès totaux: {len(deaths_log)}")
+# --- TEST FONCTION ---
 
-# Comptage par cause
-causes = {"infection": 0, "faim": 0, "naturel": 0, "autre": 0}
-for death in deaths_log:
-    cause = death[-1]
-    if cause in causes:
-        causes[cause] += 1
-    else:
-        causes["autre"] += 1
 
-print("📊 Causes des décès:")
-for cause, count in causes.items():
-    print(f"   - {cause}: {count}")
+if __name__ == "__main__":
+    from random import seed
+    seed(42)  # makes the run deterministic for testing
 
-# Autres stats
-print(f"🩺 Visites médecin: {len(visits_log)}")
+    # Initial population
+    population = [Habitant(age=25) for _ in range(50)]
+    food = 500
+    satisfaction = 70
+    day = 1
+    couples = form_couples(population, [])
 
-conversions = {
-    "Worker -> Jobless": 0, "Jobless -> Doctor": 0, "Jobless -> Farmer": 0, "Jobless -> Worker": 0,
-    "None -> Farmer": 0, "None -> Doctor": 0, "None -> Worker": 0, "None -> Jobless": 0,
-    "Poor -> Normal": 0, "Rich -> Normal": 0, "Normal -> Rich": 0
-}
-for change in status_changes_log:
-    for conv in conversions:
-        if change.startswith(conv):
-            conversions[conv] += 1
+    print("=== TEST SIMULATION (running model.py directly) ===")
+    print(f"Initial population: {len(population)} | Food: {food} | Satisfaction: {satisfaction}")
 
-print("🔄 Conversions:")
-for conv, count in conversions.items():
-    if count > 0:
-        print(f"   - {conv}: {count}")
+    # Simulate 5 days
+    for _ in range(5):
+        population, food, satisfaction, deaths, visits, status_changes, births, couples = simulate_day(
+            population, food, satisfaction, day, satisfaction, couples
+        )
+        print(f"Day {day}: 👥 {len(population)} | 🍖 {food:.0f} | 😊 {satisfaction:.1f} | ⚰️ {len(deaths)} deaths | 👶 {len(births)} births")
+        day += 1
 
-print(f"👶 Naissances totales: {len(births_log)}")
+    print("=== END OF TEST ===")
+
