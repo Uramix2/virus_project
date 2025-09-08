@@ -51,8 +51,8 @@ It combines **mathematical modeling**, **probability-based events**, and a **rea
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/virus-simulation.git
-   cd virus-simulation
+   git clone https://github.com/Uramix2/virus_project.git
+   cd virus_project
    ```
 
 2. **Install dependencies**
@@ -67,7 +67,7 @@ It combines **mathematical modeling**, **probability-based events**, and a **rea
 
 4. **Optional: test the model without Pygame**
    ```bash
-   python model.py
+   python habitant.py
    ```
 
 ---
