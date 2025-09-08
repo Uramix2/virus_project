@@ -75,7 +75,7 @@ It combines **mathematical modeling**, **probability-based events**, and a **rea
 ## 🖥️ Project Structure
 
 ```
-virus_porject/
+virus_project/
 │
 ├── habitant.py      # Inhabitant class definition and Core logic (population, disease, food, satisfaction)
 ├── final_test.py    # Pygame visualization and main simulation loop
